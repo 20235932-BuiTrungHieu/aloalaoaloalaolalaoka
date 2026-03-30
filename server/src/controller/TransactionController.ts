@@ -12,18 +12,19 @@ export const receiveWebhook = async (req: Request, res: Response) => {
 
     const transactionData: Partial<ISePayTransaction> = {
         gateway: data.gateway,
-        transactionDate: new Date(data.transactionDate),
+        transactionDate: data.transactionDate ? new Date(data.transactionDate) : new Date(),
         accountNumber: data.accountNumber,
         subAccount: data.subAccount,
-        amountIn: data.transferType === 'in' ? Number(data.transferAmount) : 0,
-        amountOut: data.transferType === 'out' ? Number(data.transferAmount) : 0,
-        accumulated: Number(data.accumulatedBalance),
+        // Chống lỗi NaN bằng cách dùng toán tử || 0
+        amountIn: data.transferType === 'in' ? (Number(data.transferAmount) || 0) : 0,
+        amountOut: data.transferType === 'out' ? (Number(data.transferAmount) || 0) : 0,
+        // Kiểm tra cả 'accumulated' và 'accumulatedBalance'
+        accumulated: Number(data.accumulatedBalance || data.accumulated) || 0,
         code: data.code,
         transactionContent: data.content,
-        referenceNumber: data.id.toString(), // ID của SePay để chống trùng
+        referenceNumber: data.id ? data.id.toString() : Date.now().toString(),
         body: JSON.stringify(data)
     };
-
     try {
         // Upsert để đảm bảo idempotency (chống trùng lặp khi SePay gửi lại)
         await Transaction.findOneAndUpdate(
@@ -48,4 +49,4 @@ export const getTransactions = async (req: Request, res: Response) => {
         console.error('[GetTransactions Error]:', error);
         return res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
-};
+};

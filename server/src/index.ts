@@ -30,19 +30,20 @@ export default app;
 // Database Connection & Server Start
 // Vercel will handle the connection differently, but for local dev we still need this
 if (process.env.NODE_ENV !== 'production') {
-  mongoose.connect(MONGODB_URI)
-    .then(() => {
-      console.log('Connected to MongoDB');
-      app.listen(PORT, () => {
-        console.log(`Server is running at http://localhost:${PORT}`);
-      });
-    })
-    .catch((err) => {
-      console.error('MongoDB connection error:', err);
-    });
+  mongoose.connect(MONGODB_URI).then(() => {
+    console.log('Connected to MongoDB local');
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  });
 } else {
-  // On Vercel, we need to ensure the DB connection is established for each function call
-  // or use a global connection pattern. Most Mongoose/Vercel guides recommend this:
-  mongoose.connect(MONGODB_URI);
+  // Middleware đảm bảo kết nối DB cho mỗi request trên Serverless
+  app.use(async (req, res, next) => {
+    if (mongoose.connection.readyState !== 1) {
+      try {
+        await mongoose.connect(MONGODB_URI);
+      } catch (err) {
+        console.error('Database connection error:', err);
+      }
+    }
+    next();
+  });
 }
-
