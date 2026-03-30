@@ -44,25 +44,9 @@ export const receiveWebhook = async (req: Request, res: Response) => {
 export const getTransactions = async (req: Request, res: Response) => {
     try {
         const transactions = await Transaction.find().sort({ transactionDate: -1 });
-
-        // Ánh xạ dữ liệu để phù hợp với Frontend
-        const mappedTransactions = transactions.map(t => ({
-            id: t.referenceNumber, // Dùng SePay ID làm key
-            gateway: t.gateway,
-            transactionDate: t.transactionDate.toLocaleString('vi-VN'),
-            accountNumber: t.accountNumber,
-            content: t.transactionContent,
-            transferType: t.amountIn > 0 ? 'in' : 'out',
-            transferAmount: t.amountIn > 0 ? t.amountIn : t.amountOut,
-            accumulated: t.accumulated,
-            subAccount: t.subAccount,
-            referenceCode: t.referenceNumber
-        }));
-
-        return res.status(200).json(mappedTransactions);
+        return res.status(200).json(transactions);
     } catch (error: any) {
         console.error('[GetTransactions Error]:', error);
         return res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 };
-
