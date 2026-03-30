@@ -11,8 +11,8 @@ const App: React.FC = () => {
   const [filter, setFilter] = useState<string>('');
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const fetchData = async () => {
-    setRefreshing(true);
+  const fetchData = async (isBackground = false) => {
+    if (!isBackground) setRefreshing(true);
     try {
       const data = await transactionService.getTransactions();
       setTransactions(data);
@@ -20,13 +20,21 @@ const App: React.FC = () => {
       console.error(err);
     } finally {
       setLoading(false);
-      setRefreshing(false);
+      if (!isBackground) setRefreshing(false);
     }
   };
 
   useEffect(() => {
     fetchData();
+
+    // Thiết lập tự động làm mới mỗi 10 giây (Polling)
+    const interval = setInterval(() => {
+      fetchData(true);
+    }, 10000);
+
+    return () => clearInterval(interval);
   }, []);
+
 
   return (
     <div className="app-container">
@@ -44,7 +52,7 @@ const App: React.FC = () => {
           
           <div style={{ display: 'flex', gap: '1rem' }}>
             <button 
-              onClick={fetchData}
+              onClick={() => fetchData()}
               disabled={refreshing}
               style={{
                 background: 'var(--glass)',
