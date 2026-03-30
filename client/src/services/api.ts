@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { SePayTransaction } from '../types/sepay';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 
+                     (import.meta.env.MODE === 'production' ? '/api' : 'http://localhost:5000/api');
 
 export const transactionService = {
   getTransactions: async (): Promise<SePayTransaction[]> => {
