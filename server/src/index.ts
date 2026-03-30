@@ -15,9 +15,6 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/sepay-
 app.use(cors());
 app.use(express.json());
 
-// Routes
-app.use('/api/webhook', webhookRoutes);
-app.use('/api/transactions', transactionRoutes);
 
 // Health Check
 app.get('/', (req: Request, res: Response) => {
@@ -27,23 +24,22 @@ app.get('/', (req: Request, res: Response) => {
 // Export app for Vercel
 export default app;
 
-// Database Connection & Server Start
-// Vercel will handle the connection differently, but for local dev we still need this
-if (process.env.NODE_ENV !== 'production') {
-  mongoose.connect(MONGODB_URI).then(() => {
-    console.log('Connected to MongoDB local');
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  });
-} else {
-  // Middleware đảm bảo kết nối DB cho mỗi request trên Serverless
+if (process.env.NODE_ENV === 'production') {
   app.use(async (req, res, next) => {
     if (mongoose.connection.readyState !== 1) {
       try {
         await mongoose.connect(MONGODB_URI);
+        console.log('Connected to MongoDB Atlas');
       } catch (err) {
-        console.error('Database connection error:', err);
+        return res.status(500).send("Database connection error");
       }
     }
     next();
   });
 }
+
+// 2. Sau đó mới đến các Routes
+app.use('/api/webhook', webhookRoutes);
+app.use('/api/transactions', transactionRoutes);
+
+
