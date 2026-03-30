@@ -34,7 +34,7 @@ const StatsGrid: React.FC<StatsGridProps> = ({ transactions }) => {
     .filter(t => t.transferType === 'out')
     .reduce((sum, t) => sum + t.transferAmount, 0);
 
-  const balance = totalIn - totalOut;
+  const balance = transactions.length > 0 ? transactions[0].accumulated : 0;
 
   return (
     <div className="stats-grid animate-fade">
