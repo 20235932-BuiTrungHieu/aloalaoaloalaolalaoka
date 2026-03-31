@@ -56,7 +56,8 @@ export const getTransactions = async (req: Request, res: Response) => {
             transferAmount: t.amountIn > 0 ? t.amountIn : t.amountOut,
             accumulated: t.accumulated,
             subAccount: t.subAccount,
-            referenceCode: t.referenceNumber
+            referenceCode: t.referenceNumber,
+            code: t.code
         }));
 
         return res.status(200).json(mappedTransactions);

@@ -30,7 +30,7 @@ const App: React.FC = () => {
     // Thiết lập tự động làm mới mỗi 10 giây (Polling)
     const interval = setInterval(() => {
       fetchData(true);
-    }, 10000);
+    }, 1000);
 
     return () => clearInterval(interval);
   }, []);
