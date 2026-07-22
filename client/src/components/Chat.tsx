@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { MessageCircle, X, Send, Wifi, WifiOff } from 'lucide-react';
-import socket from '../services/socket';
+import { MessageCircle, X, Send } from 'lucide-react';
 import './Chat.css';
+
+const API_BASE = import.meta.env.VITE_API_URL ||
+  (import.meta.env.MODE === 'production' ? '/api' : 'http://localhost:5000/api');
 
 interface Message {
   _id?: string;
-  id?: string;
   roomId: string;
   text: string;
   sender: 'guest' | 'agent';
   senderName?: string;
-  timestamp: Date | string;
+  timestamp: string;
 }
 
 // Sinh hoặc lấy roomId từ localStorage
@@ -27,107 +28,98 @@ const Chat: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [isAgentTyping, setIsAgentTyping] = useState(false);
+  const [sending, setSending] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [hasJoined, setHasJoined] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const roomIdRef = useRef<string>(getOrCreateRoomId());
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasJoinedRef = useRef(false);
+  const lastTimestampRef = useRef<string>('');
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isOpenRef = useRef(false);
+
+  // Keep ref in sync
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
-  // Kết nối Socket.IO
-  useEffect(() => {
-    socket.connect();
-
-    socket.on('connect', () => {
-      console.log('[Chat] Socket connected:', socket.id);
-      setConnected(true);
-
-      // Join room ngay khi kết nối
-      socket.emit('guest:join', {
-        roomId: roomIdRef.current,
-        guestName: `Khách #${roomIdRef.current.slice(5, 11)}`,
+  // Join room & load history
+  const joinRoom = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/rooms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: roomIdRef.current,
+          guestName: `Khách #${roomIdRef.current.slice(5, 11)}`,
+        }),
       });
-      hasJoinedRef.current = true;
-    });
+      const data = await res.json();
 
-    socket.on('disconnect', () => {
-      console.log('[Chat] Socket disconnected');
-      setConnected(false);
-    });
-
-    // Nhận lịch sử tin nhắn
-    socket.on('chat:history', (history: Message[]) => {
-      setMessages(history.map(msg => ({
-        ...msg,
-        timestamp: new Date(msg.timestamp),
-      })));
-    });
-
-    // Nhận tin nhắn mới
-    socket.on('chat:new_message', (msg: Message) => {
-      if (msg.roomId !== roomIdRef.current) return;
-
-      setMessages(prev => {
-        // Tránh duplicate
-        const exists = prev.some(m =>
-          (m._id && m._id === msg._id) ||
-          (m.id && m.id === msg._id)
-        );
-        if (exists) return prev;
-        return [...prev, { ...msg, timestamp: new Date(msg.timestamp) }];
-      });
-
-      // Nếu tin nhắn từ agent và chat đang đóng, tăng unread
-      if (msg.sender === 'agent') {
-        setIsAgentTyping(false);
+      if (data.messages && data.messages.length > 0) {
+        setMessages(data.messages);
+        lastTimestampRef.current = data.messages[data.messages.length - 1].timestamp;
       }
-    });
-
-    // Typing indicator
-    socket.on('chat:typing', (data: { roomId: string; sender: string }) => {
-      if (data.roomId === roomIdRef.current && data.sender === 'agent') {
-        setIsAgentTyping(true);
-      }
-    });
-
-    socket.on('chat:stop_typing', (data: { roomId: string; sender: string }) => {
-      if (data.roomId === roomIdRef.current && data.sender === 'agent') {
-        setIsAgentTyping(false);
-      }
-    });
-
-    return () => {
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('chat:history');
-      socket.off('chat:new_message');
-      socket.off('chat:typing');
-      socket.off('chat:stop_typing');
-      socket.disconnect();
-    };
+      setHasJoined(true);
+    } catch (error) {
+      console.error('[Chat] Join room error:', error);
+    }
   }, []);
 
-  // Scroll to bottom khi có tin nhắn mới hoặc mở chat
+  // Poll for new messages
+  const pollNewMessages = useCallback(async () => {
+    if (!hasJoined) return;
+    try {
+      const after = lastTimestampRef.current ? `?after=${encodeURIComponent(lastTimestampRef.current)}` : '';
+      const res = await fetch(`${API_BASE}/chat/rooms/${roomIdRef.current}/messages/new${after}`);
+      const newMsgs: Message[] = await res.json();
+
+      if (newMsgs.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(prev.map(m => m._id));
+          const uniqueNew = newMsgs.filter(m => !existingIds.has(m._id));
+          if (uniqueNew.length === 0) return prev;
+          return [...prev, ...uniqueNew];
+        });
+        lastTimestampRef.current = newMsgs[newMsgs.length - 1].timestamp;
+
+        // Count unread from agent when chat is closed
+        const agentMsgs = newMsgs.filter(m => m.sender === 'agent');
+        if (agentMsgs.length > 0 && !isOpenRef.current) {
+          setUnreadCount(prev => prev + agentMsgs.length);
+        }
+      }
+    } catch (error) {
+      // Silent fail on polling errors
+    }
+  }, [hasJoined]);
+
+  // Initial join
+  useEffect(() => {
+    joinRoom();
+  }, [joinRoom]);
+
+  // Start/stop polling
+  useEffect(() => {
+    if (hasJoined) {
+      pollIntervalRef.current = setInterval(pollNewMessages, 1500);
+    }
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [hasJoined, pollNewMessages]);
+
+  // Scroll to bottom on new messages
   useEffect(() => {
     if (isOpen) {
       scrollToBottom();
     }
-  }, [messages, isOpen, isAgentTyping, scrollToBottom]);
-
-  // Track unread messages when chat is closed
-  useEffect(() => {
-    if (!isOpen && messages.length > 0) {
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg.sender === 'agent') {
-        setUnreadCount(prev => prev + 1);
-      }
-    }
-  }, [messages.length]);
+  }, [messages, isOpen, scrollToBottom]);
 
   const toggleChat = () => {
     setIsOpen(!isOpen);
@@ -136,43 +128,53 @@ const Chat: React.FC = () => {
     }
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInputValue(e.target.value);
-
-    // Emit typing indicator
-    socket.emit('guest:typing', { roomId: roomIdRef.current });
-
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-    typingTimeoutRef.current = setTimeout(() => {
-      socket.emit('guest:stop_typing', { roomId: roomIdRef.current });
-    }, 1500);
-  };
-
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || !connected) return;
+    if (!inputValue.trim() || sending) return;
 
-    // Emit to server (server sẽ broadcast lại bao gồm cả sender)
-    socket.emit('guest:send_message', {
-      roomId: roomIdRef.current,
-      text: inputValue.trim(),
-      senderName: `Khách #${roomIdRef.current.slice(5, 11)}`,
-    });
-
-    // Stop typing
-    socket.emit('guest:stop_typing', { roomId: roomIdRef.current });
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
+    const text = inputValue.trim();
     setInputValue('');
+    setSending(true);
+
+    // Optimistic update — hiển thị tin nhắn ngay lập tức
+    const optimisticMsg: Message = {
+      _id: 'temp_' + Date.now(),
+      roomId: roomIdRef.current,
+      text,
+      sender: 'guest',
+      senderName: `Khách #${roomIdRef.current.slice(5, 11)}`,
+      timestamp: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/rooms/${roomIdRef.current}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          sender: 'guest',
+          senderName: `Khách #${roomIdRef.current.slice(5, 11)}`,
+        }),
+      });
+      const savedMsg: Message = await res.json();
+
+      // Replace optimistic message with server response
+      setMessages(prev =>
+        prev.map(m => m._id === optimisticMsg._id ? savedMsg : m)
+      );
+      lastTimestampRef.current = savedMsg.timestamp;
+    } catch (error) {
+      console.error('[Chat] Send message error:', error);
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(m => m._id !== optimisticMsg._id));
+    } finally {
+      setSending(false);
+    }
   };
 
-  const formatTime = (date: Date | string) => {
-    const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const formatTime = (date: string) => {
+    return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   return (
@@ -181,17 +183,11 @@ const Chat: React.FC = () => {
         <div className="chat-header">
           <div className="chat-avatar">
             <img src="https://ui-avatars.com/api/?name=Support&background=6366f1&color=fff" alt="Support" />
-            <div className={`chat-status ${connected ? '' : 'offline'}`}></div>
+            <div className="chat-status"></div>
           </div>
           <div className="chat-user-info">
             <h3>Hỗ trợ viên</h3>
-            <p className="connection-status">
-              {connected ? (
-                <><Wifi size={12} style={{ marginRight: 4 }} /> Trực tuyến</>
-              ) : (
-                <><WifiOff size={12} style={{ marginRight: 4 }} /> Đang kết nối...</>
-              )}
-            </p>
+            <p>Trực tuyến</p>
           </div>
           <button className="chat-close-btn" onClick={toggleChat}>
             <X size={20} />
@@ -206,22 +202,11 @@ const Chat: React.FC = () => {
             </div>
           )}
           {messages.map((msg, idx) => (
-            <div key={msg._id || msg.id || idx} className={`chat-message ${msg.sender === 'guest' ? 'sent' : 'received'}`}>
+            <div key={msg._id || idx} className={`chat-message ${msg.sender === 'guest' ? 'sent' : 'received'}`}>
               <div className="message-bubble">{msg.text}</div>
               <span className="message-time">{formatTime(msg.timestamp)}</span>
             </div>
           ))}
-          {isAgentTyping && (
-            <div className="chat-message received">
-              <div className="message-bubble typing-bubble">
-                <div className="typing-indicator">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -229,15 +214,14 @@ const Chat: React.FC = () => {
           <input
             type="text"
             className="chat-input"
-            placeholder={connected ? "Nhập tin nhắn..." : "Đang kết nối..."}
+            placeholder="Nhập tin nhắn..."
             value={inputValue}
-            onChange={handleInputChange}
-            disabled={!connected}
+            onChange={(e) => setInputValue(e.target.value)}
           />
-          <button 
-            type="submit" 
+          <button
+            type="submit"
             className="chat-send-btn"
-            disabled={!inputValue.trim() || !connected}
+            disabled={!inputValue.trim() || sending}
           >
             <Send size={18} />
           </button>

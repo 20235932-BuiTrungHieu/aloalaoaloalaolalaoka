@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { LogOut, Send, Search, User as UserIcon, MessageCircle, Wifi, WifiOff } from 'lucide-react';
-import socket from '../services/socket';
+import { LogOut, Send, Search, User as UserIcon, MessageCircle } from 'lucide-react';
 import './Chat.css';
+
+const API_BASE = import.meta.env.VITE_API_URL ||
+  (import.meta.env.MODE === 'production' ? '/api' : 'http://localhost:5000/api');
 
 interface AgentDashboardProps {
   onLogout: () => void;
@@ -12,19 +14,18 @@ interface ChatRoomData {
   guestName: string;
   status: string;
   lastMessage: string;
-  lastMessageAt: string | Date;
+  lastMessageAt: string;
   unreadByAgent: number;
-  createdAt?: string | Date;
+  createdAt?: string;
 }
 
 interface Message {
   _id?: string;
-  id?: string;
   roomId: string;
   text: string;
   sender: 'guest' | 'agent';
   senderName?: string;
-  timestamp: Date | string;
+  timestamp: string;
 }
 
 const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
@@ -32,12 +33,14 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [connected, setConnected] = useState(false);
+  const [sending, setSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isGuestTyping, setIsGuestTyping] = useState<string | null>(null); // roomId of typing guest
+  const [loading, setLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastMsgTimestampRef = useRef<string>('');
   const activeRoomRef = useRef<string | null>(null);
+  const roomPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep ref in sync
   useEffect(() => {
@@ -48,146 +51,160 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
-  // Socket.IO connection
-  useEffect(() => {
-    socket.connect();
-
-    socket.on('connect', () => {
-      console.log('[Agent] Socket connected:', socket.id);
-      setConnected(true);
-      socket.emit('agent:join');
-    });
-
-    socket.on('disconnect', () => {
-      console.log('[Agent] Socket disconnected');
-      setConnected(false);
-    });
-
-    // Nhận danh sách rooms
-    socket.on('agent:rooms', (roomList: ChatRoomData[]) => {
-      setRooms(roomList);
-    });
-
-    // Room mới được tạo
-    socket.on('new_room', (room: ChatRoomData) => {
-      setRooms(prev => {
-        const exists = prev.some(r => r.roomId === room.roomId);
-        if (exists) return prev;
-        return [room, ...prev];
-      });
-    });
-
-    // Room được cập nhật (tin nhắn mới)
-    socket.on('room_updated', (updatedRoom: ChatRoomData) => {
-      setRooms(prev =>
-        prev.map(r =>
-          r.roomId === updatedRoom.roomId ? { ...r, ...updatedRoom } : r
-        ).sort((a, b) =>
-          new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
-        )
-      );
-    });
-
-    // Nhận lịch sử tin nhắn cho room đang xem
-    socket.on('chat:history', (history: Message[]) => {
-      setMessages(history.map(msg => ({
-        ...msg,
-        timestamp: new Date(msg.timestamp),
-      })));
-    });
-
-    // Nhận tin nhắn mới
-    socket.on('chat:new_message', (msg: Message) => {
-      // Chỉ thêm nếu đang xem room này
-      if (msg.roomId === activeRoomRef.current) {
-        setMessages(prev => {
-          const exists = prev.some(m =>
-            (m._id && m._id === msg._id) ||
-            (m.id && m.id === msg._id)
-          );
-          if (exists) return prev;
-          return [...prev, { ...msg, timestamp: new Date(msg.timestamp) }];
-        });
-      }
-
-      if (msg.sender === 'guest') {
-        setIsGuestTyping(null);
-      }
-    });
-
-    // Typing indicators
-    socket.on('chat:typing', (data: { roomId: string; sender: string }) => {
-      if (data.sender === 'guest') {
-        setIsGuestTyping(data.roomId);
-      }
-    });
-
-    socket.on('chat:stop_typing', (data: { roomId: string; sender: string }) => {
-      if (data.sender === 'guest') {
-        setIsGuestTyping(null);
-      }
-    });
-
-    return () => {
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('agent:rooms');
-      socket.off('new_room');
-      socket.off('room_updated');
-      socket.off('chat:history');
-      socket.off('chat:new_message');
-      socket.off('chat:typing');
-      socket.off('chat:stop_typing');
-      socket.disconnect();
-    };
+  // Fetch all rooms
+  const fetchRooms = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/rooms`);
+      const data: ChatRoomData[] = await res.json();
+      setRooms(data);
+      setLoading(false);
+    } catch (error) {
+      console.error('[Agent] Fetch rooms error:', error);
+      setLoading(false);
+    }
   }, []);
 
-  // Scroll khi có tin nhắn mới
+  // Fetch messages for active room
+  const fetchMessages = useCallback(async (roomId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/rooms/${roomId}/messages`);
+      const data: Message[] = await res.json();
+      setMessages(data);
+      if (data.length > 0) {
+        lastMsgTimestampRef.current = data[data.length - 1].timestamp;
+      }
+    } catch (error) {
+      console.error('[Agent] Fetch messages error:', error);
+    }
+  }, []);
+
+  // Poll for new messages in active room
+  const pollNewMessages = useCallback(async () => {
+    const roomId = activeRoomRef.current;
+    if (!roomId) return;
+
+    try {
+      const after = lastMsgTimestampRef.current ? `?after=${encodeURIComponent(lastMsgTimestampRef.current)}` : '';
+      const res = await fetch(`${API_BASE}/chat/rooms/${roomId}/messages/new${after}`);
+      const newMsgs: Message[] = await res.json();
+
+      if (newMsgs.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(prev.map(m => m._id));
+          const uniqueNew = newMsgs.filter(m => !existingIds.has(m._id));
+          if (uniqueNew.length === 0) return prev;
+          return [...prev, ...uniqueNew];
+        });
+        lastMsgTimestampRef.current = newMsgs[newMsgs.length - 1].timestamp;
+      }
+    } catch (error) {
+      // Silent fail
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    fetchRooms();
+  }, [fetchRooms]);
+
+  // Poll rooms every 2s
+  useEffect(() => {
+    roomPollRef.current = setInterval(fetchRooms, 2000);
+    return () => {
+      if (roomPollRef.current) clearInterval(roomPollRef.current);
+    };
+  }, [fetchRooms]);
+
+  // Poll messages every 1.5s when a room is active
+  useEffect(() => {
+    if (activeRoomId) {
+      msgPollRef.current = setInterval(pollNewMessages, 1500);
+    }
+    return () => {
+      if (msgPollRef.current) clearInterval(msgPollRef.current);
+    };
+  }, [activeRoomId, pollNewMessages]);
+
+  // Scroll on new messages
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isGuestTyping, scrollToBottom]);
+  }, [messages, scrollToBottom]);
 
-  // Chọn room
-  const handleSelectRoom = (roomId: string) => {
+  // Select room
+  const handleSelectRoom = async (roomId: string) => {
     setActiveRoomId(roomId);
     setMessages([]);
-    socket.emit('agent:join_room', { roomId });
-  };
+    lastMsgTimestampRef.current = '';
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInputValue(e.target.value);
+    // Fetch messages
+    await fetchMessages(roomId);
 
-    if (activeRoomId) {
-      socket.emit('agent:typing', { roomId: activeRoomId });
-
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-      typingTimeoutRef.current = setTimeout(() => {
-        socket.emit('agent:stop_typing', { roomId: activeRoomId });
-      }, 1500);
+    // Mark as read
+    try {
+      await fetch(`${API_BASE}/chat/rooms/${roomId}/read`, { method: 'PUT' });
+      setRooms(prev =>
+        prev.map(r => r.roomId === roomId ? { ...r, unreadByAgent: 0 } : r)
+      );
+    } catch (error) {
+      // Silent
     }
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || !connected || !activeRoomId) return;
+    if (!inputValue.trim() || sending || !activeRoomId) return;
 
-    socket.emit('agent:send_message', {
-      roomId: activeRoomId,
-      text: inputValue.trim(),
-    });
-
-    socket.emit('agent:stop_typing', { roomId: activeRoomId });
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
+    const text = inputValue.trim();
     setInputValue('');
+    setSending(true);
+
+    // Optimistic update
+    const optimisticMsg: Message = {
+      _id: 'temp_' + Date.now(),
+      roomId: activeRoomId,
+      text,
+      sender: 'agent',
+      senderName: 'Hỗ trợ viên',
+      timestamp: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/rooms/${activeRoomId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          sender: 'agent',
+          senderName: 'Hỗ trợ viên',
+        }),
+      });
+      const savedMsg: Message = await res.json();
+
+      // Replace optimistic message
+      setMessages(prev =>
+        prev.map(m => m._id === optimisticMsg._id ? savedMsg : m)
+      );
+      lastMsgTimestampRef.current = savedMsg.timestamp;
+
+      // Update room in sidebar
+      setRooms(prev =>
+        prev.map(r =>
+          r.roomId === activeRoomId
+            ? { ...r, lastMessage: text, lastMessageAt: new Date().toISOString() }
+            : r
+        )
+      );
+    } catch (error) {
+      console.error('[Agent] Send message error:', error);
+      setMessages(prev => prev.filter(m => m._id !== optimisticMsg._id));
+    } finally {
+      setSending(false);
+    }
   };
 
-  const formatTime = (date: Date | string) => {
-    const d = date instanceof Date ? date : new Date(date);
+  const formatTime = (date: string) => {
+    const d = new Date(date);
     const now = new Date();
     const diff = now.getTime() - d.getTime();
     const oneDay = 24 * 60 * 60 * 1000;
@@ -201,9 +218,8 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
     }
   };
 
-  const formatMessageTime = (date: Date | string) => {
-    const d = date instanceof Date ? date : new Date(date);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const formatMessageTime = (date: string) => {
+    return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   const filteredRooms = rooms.filter(r =>
@@ -231,36 +247,19 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
               <div style={{
                 width: '10px',
                 height: '10px',
-                background: connected ? 'var(--success)' : 'var(--danger)',
+                background: 'var(--success)',
                 borderRadius: '50%',
-                boxShadow: connected ? '0 0 8px var(--success)' : 'none',
-                transition: 'var(--transition)',
+                boxShadow: '0 0 8px var(--success)',
               }}></div>
               Hỗ trợ khách hàng
             </h2>
             <button
-              onClick={() => {
-                socket.disconnect();
-                onLogout();
-              }}
+              onClick={onLogout}
               style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: '0.25rem' }}
               title="Đăng xuất"
             >
               <LogOut size={20} />
             </button>
-          </div>
-
-          {/* Connection status */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            fontSize: '0.8rem',
-            color: connected ? 'var(--success)' : 'var(--danger)',
-            marginBottom: '1rem',
-          }}>
-            {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
-            {connected ? 'Đã kết nối' : 'Mất kết nối...'}
           </div>
 
           <div className="search-container" style={{ marginBottom: 0 }}>
@@ -280,7 +279,21 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
 
         {/* Room List */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {filteredRooms.length === 0 && (
+          {loading && (
+            <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-dim)' }}>
+              <div className="loading-spinner" style={{
+                width: '30px',
+                height: '30px',
+                border: '3px solid var(--border)',
+                borderTopColor: 'var(--primary)',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite',
+                margin: '0 auto 1rem',
+              }}></div>
+              Đang tải...
+            </div>
+          )}
+          {!loading && filteredRooms.length === 0 && (
             <div style={{
               padding: '3rem 1.5rem',
               textAlign: 'center',
@@ -338,11 +351,7 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
                   overflow: 'hidden',
                   textOverflow: 'ellipsis'
                 }}>
-                  {isGuestTyping === room.roomId ? (
-                    <span style={{ color: 'var(--primary)', fontStyle: 'italic' }}>Đang gõ...</span>
-                  ) : (
-                    room.lastMessage || 'Chưa có tin nhắn'
-                  )}
+                  {room.lastMessage || 'Chưa có tin nhắn'}
                 </p>
               </div>
               {room.unreadByAgent > 0 && (
@@ -370,7 +379,7 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
       {/* Main Chat Area */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--bg-main)' }}>
         {!activeRoomId ? (
-          /* Empty state — No room selected */
+          /* Empty state */
           <div style={{
             flex: 1,
             display: 'flex',
@@ -421,14 +430,7 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
                 <h3 style={{ margin: 0, fontSize: '1.2rem' }}>
                   {activeRoom?.guestName || 'Khách hàng'}
                 </h3>
-                <p style={{
-                  margin: 0,
-                  fontSize: '0.85rem',
-                  color: isGuestTyping === activeRoomId ? 'var(--primary)' : 'var(--success)',
-                  fontStyle: isGuestTyping === activeRoomId ? 'italic' : 'normal',
-                }}>
-                  {isGuestTyping === activeRoomId ? 'Đang gõ...' : 'Đang hoạt động'}
-                </p>
+                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--success)' }}>Đang hoạt động</p>
               </div>
             </div>
 
@@ -447,24 +449,13 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
                 </div>
               )}
               {messages.map((msg, idx) => (
-                <div key={msg._id || msg.id || idx} className={`chat-message ${msg.sender === 'agent' ? 'sent' : 'received'}`} style={{ maxWidth: '60%' }}>
+                <div key={msg._id || idx} className={`chat-message ${msg.sender === 'agent' ? 'sent' : 'received'}`} style={{ maxWidth: '60%' }}>
                   <div className="message-bubble" style={{ fontSize: '1rem', padding: '1rem 1.25rem' }}>
                     {msg.text}
                   </div>
                   <span className="message-time">{formatMessageTime(msg.timestamp)}</span>
                 </div>
               ))}
-              {isGuestTyping === activeRoomId && (
-                <div className="chat-message received" style={{ maxWidth: '60%' }}>
-                  <div className="message-bubble typing-bubble" style={{ fontSize: '1rem', padding: '1rem 1.25rem' }}>
-                    <div className="typing-indicator">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                  </div>
-                </div>
-              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -484,10 +475,9 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
               >
                 <input
                   type="text"
-                  placeholder={connected ? "Nhập tin nhắn hỗ trợ..." : "Đang kết nối..."}
+                  placeholder="Nhập tin nhắn hỗ trợ..."
                   value={inputValue}
-                  onChange={handleInputChange}
-                  disabled={!connected}
+                  onChange={(e) => setInputValue(e.target.value)}
                   style={{
                     flex: 1,
                     background: 'transparent',
@@ -500,19 +490,19 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
                 />
                 <button
                   type="submit"
-                  disabled={!inputValue.trim() || !connected}
+                  disabled={!inputValue.trim() || sending}
                   style={{
                     width: '45px',
                     height: '45px',
                     borderRadius: '50%',
-                    background: inputValue.trim() && connected ? 'var(--primary)' : 'var(--border)',
+                    background: inputValue.trim() && !sending ? 'var(--primary)' : 'var(--border)',
                     color: 'white',
                     border: 'none',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    cursor: inputValue.trim() && connected ? 'pointer' : 'not-allowed',
-                    opacity: inputValue.trim() && connected ? 1 : 0.5,
+                    cursor: inputValue.trim() && !sending ? 'pointer' : 'not-allowed',
+                    opacity: inputValue.trim() && !sending ? 1 : 0.5,
                     transition: 'var(--transition)'
                   }}
                 >
@@ -523,6 +513,13 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ onLogout }) => {
           </>
         )}
       </div>
+
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 };
