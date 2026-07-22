@@ -27,34 +27,20 @@ app.get('/', (req: Request, res: Response) => {
 // Export app for Vercel
 export default app;
 
-if (process.env.NODE_ENV === 'production') {
-  app.use(async (req, res, next) => {
-    if (mongoose.connection.readyState !== 1) {
-      try {
-        await mongoose.connect(MONGODB_URI);
-        console.log('Connected to MongoDB Atlas');
-      } catch (err) {
-        return res.status(500).send("Database connection error");
-      }
-    }
-    next();
-  });
-}
-
 // Routes
 app.use('/api/webhook', webhookRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/chat', chatRoutes);
 
-if (process.env.NODE_ENV !== 'production') {
-  mongoose.connect(MONGODB_URI)
-    .then(() => {
-      console.log('Connected to MongoDB');
-      app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-      });
-    })
-    .catch((error) => {
-      console.error('Error connecting to MongoDB:', error);
+// Start server — kết nối MongoDB và listen port
+mongoose.connect(MONGODB_URI)
+  .then(() => {
+    console.log('Connected to MongoDB');
+    app.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
     });
-}
+  })
+  .catch((error) => {
+    console.error('Error connecting to MongoDB:', error);
+  });
+
