@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import StatsGrid from './components/StatsGrid';
 import TransactionTable from './components/TransactionTable';
+import Chat from './components/Chat';
+import Login from './components/Login';
+import AgentDashboard from './components/AgentDashboard';
 import { transactionService } from './services/api';
 import { SePayTransaction } from './types/sepay';
 import { RefreshCcw, Bell } from 'lucide-react';
 
 const App: React.FC = () => {
+  const [role, setRole] = useState<'guest' | 'agent' | null>(null);
   const [transactions, setTransactions] = useState<SePayTransaction[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [filter, setFilter] = useState<string>('');
@@ -35,6 +39,13 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  if (!role) {
+    return <Login onSelectRole={setRole} />;
+  }
+
+  if (role === 'agent') {
+    return <AgentDashboard onLogout={() => setRole(null)} />;
+  }
 
   return (
     <div className="app-container">
@@ -73,6 +84,23 @@ const App: React.FC = () => {
               {refreshing ? 'Đang cập nhật...' : 'Làm mới'}
             </button>
             
+            <button 
+              onClick={() => setRole(null)}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--danger)',
+                color: 'var(--danger)',
+                padding: '0.75rem 1rem',
+                borderRadius: '0.75rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                transition: 'var(--transition)'
+              }}
+            >
+              Đăng xuất
+            </button>
             <div style={{
               width: '45px',
               height: '45px',
@@ -111,6 +139,8 @@ const App: React.FC = () => {
         )}
       </main>
       
+      <Chat />
+
       <style>{`
         @keyframes spin {
           from { transform: rotate(0deg); }

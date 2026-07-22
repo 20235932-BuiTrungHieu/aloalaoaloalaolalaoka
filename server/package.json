@@ -12,7 +12,8 @@
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "mongoose": "^7.8.9",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.15",
